@@ -25,16 +25,26 @@ metadata:
 默认使用内置 `wp365` 资源搜索 provider，因此最小配置只需要豆瓣 ID 和夸克 Cookie：
 
 ```bash
-python3 src/watchflow.py \
+watchflow \
   --config config.json \
   --count 5 \
   --max-pages 5
 ```
 
+建议第一次先审阅候选，不转存：
+
+```bash
+watchflow \
+  --config config.json \
+  --max-pages 1 \
+  --count 5 \
+  --review
+```
+
 如果要使用自己的聚合搜索接口：
 
 ```bash
-python3 src/watchflow.py \
+watchflow \
   --config config.json \
   --search-provider custom \
   --search-endpoint http://127.0.0.1:8888/api/search
@@ -43,10 +53,11 @@ python3 src/watchflow.py \
 复用缓存分批跑：
 
 ```bash
-python3 src/watchflow.py \
+watchflow \
   --config config.json \
   --use-existing \
   --start-index 100 \
+  --skip-done \
   --count 20
 ```
 
@@ -68,7 +79,11 @@ cp examples/config.example.json config.json
 
 - 不提交豆瓣 ID、夸克 Cookie、私有搜索接口。
 - 默认使用公开 `wp365` provider；私有聚合 API 是可选项。
+- `wp365` 是实验性第三方 provider，稳定性和资源质量取决于第三方服务。
+- 开源版本不提供、不托管任何影视资源，用户需自行确认内容使用权。
+- 正式保存前优先使用 `--dry-run` 和 `--review`。
 - 不删除网盘文件。
 - 电视剧只规范顶层文件夹，不乱改内部集数文件。
 - 电影只有单个主视频时才自动重命名视频文件。
 - 资源标题太短或疑似短剧/错剧时宁可跳过，不要误存。
+- 可用 `overrides` 按豆瓣 `subject_id` 手动修正标题、年份、类型或跳过。

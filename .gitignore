@@ -9,8 +9,14 @@ config.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
+build/
+dist/
+*.egg-info/
 
 # Runtime outputs
 *.log
 *.jsonl
+state.jsonl
+douban_wish.json
+.watchflow/
 /tmp/

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchflow"
+version = "1.0.0"
+description = "Turn a Douban wish list into a reviewed Quark media-library queue."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ace Gao" }]
+dependencies = [
+  "httpx>=0.27.0",
+  "quarkpan>=1.0.5",
+]
+keywords = ["douban", "quark", "media-library", "hermes", "skill"]
+
+[project.scripts]
+watchflow = "watchflow:main"
+
+[tool.setuptools]
+py-modules = ["watchflow"]
+
+[tool.setuptools.package-dir]
+"" = "src"

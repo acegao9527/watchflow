@@ -27,7 +27,10 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterable
 
-import httpx
+try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - exercised by `--help` before install
+    httpx = None  # type: ignore[assignment]
 
 try:
     from quark_client import create_client
@@ -38,8 +41,10 @@ VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".ts", ".wmv", ".flv", ".we
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub"}
 EXCLUDE_WORDS = ["预告", "花絮", "解说", "枪版", "TC", "TS", "CAM", "抢先"]
 BAD_MOVIE_NOTE_HINTS = ["短剧", "全集", "美剧", "电视剧", "动画", "动漫", "综艺"]
+DEFAULT_DATA_DIR = Path.home() / ".config/watchflow"
 DEFAULT_CONFIG_PATH = Path.home() / ".config/watchflow/config.json"
-DEFAULT_CACHE_PATH = Path("/tmp/douban_wish.json")
+DEFAULT_CACHE_PATH = DEFAULT_DATA_DIR / "douban_wish.json"
+DEFAULT_STATE_PATH = DEFAULT_DATA_DIR / "state.jsonl"
 
 
 @dataclasses.dataclass
@@ -51,6 +56,7 @@ class Config:
     wp365_base_url: str = "https://pan.365wp.top"
     movie_folder: str = "电影下载"
     show_folder: str = "电视剧下载"
+    overrides: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -79,13 +85,51 @@ def load_config(path: Path) -> Config:
         wp365_base_url=os.getenv("WP365_BASE_URL", data.get("wp365_base_url", Config.wp365_base_url)),
         movie_folder=data.get("movie_folder", Config.movie_folder),
         show_folder=data.get("show_folder", Config.show_folder),
+        overrides=data.get("overrides", {}),
     )
     return cfg
+
+
+def require_httpx() -> Any:
+    if httpx is None:
+        raise RuntimeError("missing dependency: install with `pip install -r requirements.txt` or `pip install -e .`")
+    return httpx
 
 
 def normalize_text(s: str) -> str:
     s = unicodedata.normalize("NFKC", s or "").lower()
     return re.sub(r"[\s\-—_:：·・/\\\[\]【】（）()《》,.，。!！?？+]+", "", s)
+
+
+def ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def apply_overrides(items: list[WishItem], overrides: dict[str, dict[str, Any]]) -> list[WishItem]:
+    if not overrides:
+        return items
+    out: list[WishItem] = []
+    for item in items:
+        override = overrides.get(item.subject_id, {})
+        title = override.get("title") or item.main_title
+        year = str(override.get("year") or item.year)
+        media_type = override.get("media_type") or item.media_type
+        out.append(
+            WishItem(
+                subject_id=item.subject_id,
+                title=override.get("raw_title") or item.title,
+                main_title=title,
+                url=item.url,
+                year=year,
+                pub=item.pub,
+                media_type=media_type,
+            )
+        )
+    return out
+
+
+def is_skipped_by_override(item: WishItem, overrides: dict[str, dict[str, Any]]) -> bool:
+    return bool(overrides.get(item.subject_id, {}).get("skip"))
 
 
 def classify_item(title: str, pub: str, year: str) -> str:
@@ -137,6 +181,7 @@ def parse_wish_items_from_html(text: str) -> list[WishItem]:
 def fetch_douban_wish(user_id: str, max_pages: int, cache_path: Path, cookie: str = "") -> list[WishItem]:
     if not user_id:
         raise ValueError("douban_user_id is required; set config.json or DOUBAN_USER_ID")
+    http = require_httpx()
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         "Referer": "https://movie.douban.com/",
@@ -144,7 +189,7 @@ def fetch_douban_wish(user_id: str, max_pages: int, cache_path: Path, cookie: st
     if cookie:
         headers["Cookie"] = cookie
     all_items: list[WishItem] = []
-    with httpx.Client(headers=headers, follow_redirects=True, timeout=30) as client:
+    with http.Client(headers=headers, follow_redirects=True, timeout=30) as client:
         for page in range(max_pages):
             start = page * 15
             url = f"https://movie.douban.com/people/{user_id}/wish?start={start}&sort=time&rating=all&filter=all&mode=list"
@@ -164,6 +209,7 @@ def fetch_douban_wish(user_id: str, max_pages: int, cache_path: Path, cookie: st
 
 def save_cache(items: Iterable[WishItem], path: Path) -> None:
     data = {"items": [dataclasses.asdict(item) for item in items]}
+    ensure_parent(path)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -191,19 +237,52 @@ def list_all(client: Any, fid: str) -> list[dict[str, Any]]:
         page += 1
 
 
-def get_target_fid(client: Any, target_folder: str) -> str:
+def extract_fid(data: dict[str, Any]) -> str:
+    candidates = [
+        data.get("fid"),
+        data.get("data", {}).get("fid") if isinstance(data.get("data"), dict) else "",
+        data.get("data", {}).get("file", {}).get("fid") if isinstance(data.get("data"), dict) else "",
+    ]
+    return next((str(x) for x in candidates if x), "")
+
+
+def create_target_folder(client: Any, target_folder: str) -> str:
+    attempts = [
+        ("create_folder", (target_folder,), {"parent_id": "0"}),
+        ("create_folder", (target_folder,), {"parent_fid": "0"}),
+        ("create_folder", ("0", target_folder), {}),
+        ("mkdir", (target_folder,), {"parent_id": "0"}),
+        ("mkdir", ("0", target_folder), {}),
+    ]
+    for method_name, args, kwargs in attempts:
+        method = getattr(client, method_name, None)
+        if method is None:
+            continue
+        try:
+            fid = extract_fid(method(*args, **kwargs))
+            if fid:
+                return fid
+        except TypeError:
+            continue
+    raise RuntimeError(f"Quark root folder not found: {target_folder}. Create it manually, or try --create-folders if your client supports folder creation.")
+
+
+def get_target_fid(client: Any, target_folder: str, *, create_missing: bool = False) -> str:
     root = list_all(client, "0")
     target = next((x for x in root if x.get("dir") and x.get("file_name") == target_folder), None)
     if not target:
-        raise RuntimeError(f"Quark root folder not found: {target_folder}")
+        if create_missing:
+            return create_target_folder(client, target_folder)
+        raise RuntimeError(f"Quark root folder not found: {target_folder}. Create it in Quark root or rerun with --create-folders.")
     return target["fid"]
 
 
 def search_custom_api(endpoint: str, item: WishItem) -> list[dict[str, Any]]:
     if not endpoint:
         raise ValueError("search_endpoint is required when search_provider=custom")
+    http = require_httpx()
     payload = {"kw": item.main_title, "cloud_types": ["quark"], "filter": {"exclude": EXCLUDE_WORDS}}
-    with httpx.Client(timeout=30) as client:
+    with http.Client(timeout=30) as client:
         r = client.post(endpoint, json=payload)
         r.raise_for_status()
         data = r.json()
@@ -217,9 +296,10 @@ def search_wp365(base_url: str, item: WishItem, page: int = 1) -> list[dict[str,
     `/api/interface/search`; the real Quark link is obtained via
     `/api/transfer-share/transfer-share`.
     """
+    http = require_httpx()
     params = {"keyword": item.main_title, "page": str(page), "pageSize": "20"}
     headers = {"Referer": f"{base_url}/", "User-Agent": "Mozilla/5.0"}
-    with httpx.Client(timeout=20, headers=headers) as client:
+    with http.Client(timeout=20, headers=headers) as client:
         r = client.get(f"{base_url}/api/interface/search", params=params)
         r.raise_for_status()
         data = r.json()
@@ -279,9 +359,10 @@ def validate_quark_url(url: str) -> tuple[bool, str]:
     if not m:
         return False, "not_quark_share"
     pwd_id = m.group(1)
+    http = require_httpx()
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://pan.quark.cn/"}
     try:
-        r = httpx.post("https://drive-m.quark.cn/1/clouddrive/share/sharepage/token", json={"pwd_id": pwd_id, "passcode": ""}, timeout=30, headers=headers)
+        r = http.post("https://drive-m.quark.cn/1/clouddrive/share/sharepage/token", json={"pwd_id": pwd_id, "passcode": ""}, timeout=30, headers=headers)
         data = r.json()
     except Exception as exc:
         return False, f"validation_error:{type(exc).__name__}"
@@ -313,6 +394,47 @@ def candidate_score(item: WishItem, cand: dict[str, Any]) -> int:
     return score
 
 
+def candidate_reason(item: WishItem, cand: dict[str, Any], score: int) -> str:
+    if score >= 0:
+        return "eligible"
+    note = cand.get("note") or cand.get("title") or ""
+    nt, nn = normalize_text(item.main_title), normalize_text(note)
+    if not nt or nt not in nn:
+        return "title_mismatch"
+    if item.media_type == "movie" and any(h in note for h in BAD_MOVIE_NOTE_HINTS) and (not item.year or item.year not in note):
+        return "movie_bad_hint_without_year"
+    if item.media_type == "movie":
+        return "movie_needs_year_or_exact_title"
+    return "low_score"
+
+
+def rank_candidates(cfg: Config, item: WishItem, *, validate: bool, limit: int) -> tuple[list[dict[str, Any]], str]:
+    try:
+        raw_candidates = search_quark(cfg, item)
+    except Exception as exc:
+        return [], f"search_error:{type(exc).__name__}"
+    ranked = sorted(raw_candidates, key=lambda c: candidate_score(item, c), reverse=True)
+    out: list[dict[str, Any]] = []
+    for cand in ranked[:limit]:
+        score = candidate_score(item, cand)
+        valid: bool | None = None
+        validation = "not_checked"
+        if validate and score >= 0:
+            valid, validation = validate_quark_url(cand.get("url") or "")
+        out.append(
+            {
+                "note": cand.get("note") or cand.get("title", ""),
+                "url": cand.get("url", ""),
+                "source": cand.get("source", ""),
+                "score": score,
+                "reason": candidate_reason(item, cand, score),
+                "valid": valid,
+                "validation": validation,
+            }
+        )
+    return out, "ok" if out else "no_candidates"
+
+
 def choose_candidate(cfg: Config, item: WishItem) -> tuple[dict[str, Any] | None, str]:
     try:
         ranked = sorted(search_quark(cfg, item), key=lambda c: candidate_score(item, c), reverse=True)
@@ -337,6 +459,29 @@ def extract_saved_fids(res: dict[str, Any]) -> list[str]:
     return []
 
 
+def append_state(path: Path, record: dict[str, Any]) -> None:
+    ensure_parent(path)
+    payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **record}
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def load_done_subjects(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    done: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("subject_id") and row.get("action") in {"saved", "skip_exists"}:
+            done.add(str(row["subject_id"]))
+    return done
+
+
 def normalize_inside_movie_folder(client: Any, folder_fid: str, base: str) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
     files = [x for x in list_all(client, folder_fid) if not x.get("dir")]
@@ -358,6 +503,90 @@ def normalize_inside_movie_folder(client: Any, folder_fid: str, base: str) -> li
     return changes
 
 
+def iter_selected_items(items: list[WishItem], args: argparse.Namespace, *, limit: int | None = None) -> Iterable[tuple[int, WishItem]]:
+    matching_index = 0
+    yielded = 0
+    for item in items:
+        if args.media_type != "all" and item.media_type != args.media_type:
+            continue
+        if matching_index < args.start_index:
+            matching_index += 1
+            continue
+        matching_index += 1
+        yield matching_index, item
+        yielded += 1
+        if limit is not None and yielded >= limit:
+            break
+
+
+def summarize_results(results: list[dict[str, Any]]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for row in results:
+        action = row.get("action", "unknown")
+        summary[action] = summary.get(action, 0) + 1
+    return summary
+
+
+def base_result(item: WishItem, action: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "subject_id": item.subject_id,
+        "title": item.main_title,
+        "year": item.year,
+        "media_type": item.media_type,
+        "action": action,
+        **extra,
+    }
+
+
+def review_items(cfg: Config, items: list[WishItem], args: argparse.Namespace) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for matching_index, item in iter_selected_items(items, args, limit=args.count):
+        if is_skipped_by_override(item, cfg.overrides):
+            results.append(base_result(item, "skip_override", index=matching_index))
+            continue
+        print(f"[review {matching_index}/{len(items)}] {item.media_type}: {item.folder_name()}", file=sys.stderr, flush=True)
+        candidates, reason = rank_candidates(cfg, item, validate=not args.no_validate, limit=args.review_limit)
+        results.append(base_result(item, "reviewed", index=matching_index, reason=reason, candidates=candidates))
+    return {"mode": "review", "processed_results": len(results), "summary": summarize_results(results), "results": results}
+
+
+def save_one_item(
+    client: Any,
+    cfg: Config,
+    item: WishItem,
+    target_fid_by_type: dict[str, str],
+    existing_by_type: dict[str, set[str]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    if is_skipped_by_override(item, cfg.overrides):
+        return base_result(item, "skip_override")
+    base = item.folder_name()
+    if base in existing_by_type[item.media_type]:
+        return base_result(item, "skip_exists", folder=base)
+    cand, why = choose_candidate(cfg, item)
+    if not cand:
+        return base_result(item, "no_resource", reason=why)
+    try:
+        res = client.save_shared_files(cand["url"], target_folder_id=target_fid_by_type[item.media_type], wait_for_completion=True, timeout=args.timeout)
+        fids = extract_saved_fids(res)
+        if not fids:
+            return base_result(item, "save_failed", reason="no_saved_fids", note=cand.get("note"))
+        per = []
+        for i, fid in enumerate(fids, 1):
+            name = base if len(fids) == 1 else f"{base} - {i}"
+            try:
+                rr = client.rename_file(fid, name)
+                rename_code = rr.get("code")
+            except Exception as exc:
+                rename_code = f"rename_error:{type(exc).__name__}"
+            changes = normalize_inside_movie_folder(client, fid, name) if item.media_type == "movie" else []
+            per.append({"fid": fid, "folder": name, "rename_code": rename_code, "file_changes": changes})
+        existing_by_type[item.media_type].add(base)
+        return base_result(item, "saved", url=cand.get("url"), note=cand.get("note"), folders=per)
+    except Exception as exc:
+        return base_result(item, "error", reason=type(exc).__name__, message=str(exc))
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     cfg = load_config(Path(args.config))
     if args.douban_user_id:
@@ -374,59 +603,49 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         items = load_cache(cache_path)
     else:
         items = fetch_douban_wish(cfg.douban_user_id, args.max_pages, cache_path, args.douban_cookie or os.getenv("DOUBAN_COOKIE", ""))
+    items = apply_overrides(items, cfg.overrides)
 
     if args.dry_run:
-        return {"mode": "dry_run", "total": len(items), "sample": [dataclasses.asdict(x) for x in items[: args.count]]}
+        sample = [dataclasses.asdict(item) for _, item in iter_selected_items(items, args, limit=args.count)]
+        return {"mode": "dry_run", "total": len(items), "sample": sample}
+
+    if args.review:
+        return review_items(cfg, items, args)
 
     if create_client is None:
         raise RuntimeError("quark_client is required for saving; install requirements.txt")
     if not cfg.quark_cookie:
         raise ValueError("quark_cookie is required; set config.json or QUARK_COOKIE")
     client = create_client(cookies=cfg.quark_cookie, auto_login=False)
-    target_fid_by_type = {"movie": get_target_fid(client, cfg.movie_folder), "show": get_target_fid(client, cfg.show_folder)}
+    target_fid_by_type = {
+        "movie": get_target_fid(client, cfg.movie_folder, create_missing=args.create_folders),
+        "show": get_target_fid(client, cfg.show_folder, create_missing=args.create_folders),
+    }
     existing_by_type = {"movie": {x.get("file_name") for x in list_all(client, target_fid_by_type["movie"])}, "show": {x.get("file_name") for x in list_all(client, target_fid_by_type["show"])}}
+    done_subjects = load_done_subjects(Path(args.state)) if args.skip_done else set()
 
     saved_count = 0
     results: list[dict[str, Any]] = []
-    matching_index = 0
-    for item in items:
-        if args.media_type != "all" and item.media_type != args.media_type:
-            continue
-        if matching_index < args.start_index:
-            matching_index += 1
-            continue
-        matching_index += 1
+    state_path = Path(args.state)
+    for matching_index, item in iter_selected_items(items, args):
         if saved_count >= args.count:
             break
+        if item.subject_id in done_subjects:
+            results.append(base_result(item, "skip_done", index=matching_index))
+            continue
         base = item.folder_name()
-        if base in existing_by_type[item.media_type]:
-            results.append({"title": item.main_title, "media_type": item.media_type, "action": "skip_exists", "folder": base})
-            continue
         print(f"[{matching_index}/{len(items)}] search {item.media_type}: {base}", file=sys.stderr, flush=True)
-        cand, why = choose_candidate(cfg, item)
-        if not cand:
-            results.append({"title": item.main_title, "media_type": item.media_type, "action": "no_resource", "reason": why})
-            continue
-        res = client.save_shared_files(cand["url"], target_folder_id=target_fid_by_type[item.media_type], wait_for_completion=True, timeout=args.timeout)
-        fids = extract_saved_fids(res)
-        per = []
-        for i, fid in enumerate(fids, 1):
-            name = base if len(fids) == 1 else f"{base} - {i}"
-            try:
-                rr = client.rename_file(fid, name)
-                rename_code = rr.get("code")
-            except Exception as exc:
-                rename_code = f"rename_error:{type(exc).__name__}"
-            changes = normalize_inside_movie_folder(client, fid, name) if item.media_type == "movie" else []
-            per.append({"fid": fid, "folder": name, "rename_code": rename_code, "file_changes": changes})
-        saved_count += 1
-        existing_by_type[item.media_type].add(base)
-        results.append({"title": item.main_title, "media_type": item.media_type, "action": "saved", "url": cand.get("url"), "note": cand.get("note"), "folders": per})
-    return {"saved_count": saved_count, "processed_results": len(results), "results": results}
+        result = save_one_item(client, cfg, item, target_fid_by_type, existing_by_type, args)
+        result["index"] = matching_index
+        if result["action"] == "saved":
+            saved_count += 1
+        results.append(result)
+        append_state(state_path, result)
+    return {"saved_count": saved_count, "processed_results": len(results), "summary": summarize_results(results), "state": str(state_path), "results": results}
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Turn a Douban wish list into a reviewed Quark media-library queue.")
     ap.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     ap.add_argument("--douban-user-id", default="")
     ap.add_argument("--douban-cookie", default="")
@@ -434,15 +653,25 @@ def main() -> None:
     ap.add_argument("--search-endpoint", default="", help="Custom media-resource API endpoint, used when search-provider=custom/api")
     ap.add_argument("--wp365-base-url", default="", help="Override wp365 base URL")
     ap.add_argument("--cache", default=str(DEFAULT_CACHE_PATH))
+    ap.add_argument("--state", default=str(DEFAULT_STATE_PATH), help="JSONL processing log used for resumable runs")
     ap.add_argument("--use-existing", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--review", action="store_true", help="Search and score candidates without saving anything")
+    ap.add_argument("--review-limit", type=int, default=5, help="Candidate count per item in review mode")
+    ap.add_argument("--no-validate", action="store_true", help="Skip Quark share-token validation in review mode")
+    ap.add_argument("--skip-done", action="store_true", help="Skip subject IDs already saved or found existing in --state")
+    ap.add_argument("--create-folders", action="store_true", help="Try to create missing Quark root folders")
     ap.add_argument("--count", type=int, default=5)
     ap.add_argument("--max-pages", type=int, default=5)
     ap.add_argument("--media-type", choices=["all", "movie", "show"], default="all")
     ap.add_argument("--start-index", type=int, default=0)
     ap.add_argument("--timeout", type=int, default=120)
     args = ap.parse_args()
-    print(json.dumps(run(args), ensure_ascii=False, indent=2))
+    try:
+        print(json.dumps(run(args), ensure_ascii=False, indent=2))
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
+        print(json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
