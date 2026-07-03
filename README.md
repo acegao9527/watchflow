@@ -4,7 +4,7 @@
 
 1. 抓取豆瓣待看条目；
 2. 识别电影 / 电视剧；
-3. 调用影视资源搜索服务检索夸克网盘链接；
+3. 默认调用内置 `wp365` 资源站插件检索并解密夸克网盘链接；
 4. 验证夸克分享链接是否有效；
 5. 转存到夸克网盘的 `电影下载` / `电视剧下载`；
 6. 统一命名：
@@ -15,6 +15,7 @@
 
 ## 特性
 
+- 开箱即用：内置 `wp365` 资源搜索 provider，只需要豆瓣 ID 和夸克 Cookie
 - 可分批续跑：`--start-index` + `--use-existing`
 - 支持电影 / 电视剧分流
 - 夸克链接 token API 验证，不用网页 200 假判断
@@ -33,7 +34,7 @@ pip install -r requirements.txt
 cp examples/config.example.json config.json
 ```
 
-编辑 `config.json`，填入你自己的配置。不要提交真实配置。
+编辑 `config.json`，填入你自己的豆瓣 ID 和夸克 Cookie。默认使用内置 `wp365` provider 搜索资源，不需要私有搜索接口。不要提交真实配置。
 
 ## 配置
 
@@ -41,7 +42,9 @@ cp examples/config.example.json config.json
 {
   "douban_user_id": "你的豆瓣用户 ID",
   "quark_cookie": "你的夸克 Cookie",
-  "search_endpoint": "http://127.0.0.1:8888/api/search",
+  "search_provider": "wp365",
+  "wp365_base_url": "https://pan.365wp.top",
+  "search_endpoint": "",
   "movie_folder": "电影下载",
   "show_folder": "电视剧下载"
 }
@@ -52,6 +55,8 @@ cp examples/config.example.json config.json
 ```bash
 export DOUBAN_USER_ID="..."
 export QUARK_COOKIE="..."
+# 可选：改用自定义资源搜索 API
+export SEARCH_PROVIDER="custom"
 export MEDIA_SEARCH_ENDPOINT="http://127.0.0.1:8888/api/search"
 ```
 
@@ -93,9 +98,34 @@ python3 src/douban_wish_quark_downloader.py --config config.json --media-type mo
 python3 src/douban_wish_quark_downloader.py --config config.json --media-type show --count 10
 ```
 
-## 资源搜索接口约定
+## 资源搜索 Provider
 
-默认接口：
+默认 provider 是 `wp365`，会调用公开资源站：
+
+```text
+https://pan.365wp.top/api/interface/search
+https://pan.365wp.top/api/transfer-share/transfer-share
+```
+
+这意味着最小配置只需要：
+
+```json
+{
+  "douban_user_id": "你的豆瓣用户 ID",
+  "quark_cookie": "你的夸克 Cookie"
+}
+```
+
+如果你有自己的聚合搜索接口，可以切换到 `custom`：
+
+```json
+{
+  "search_provider": "custom",
+  "search_endpoint": "http://127.0.0.1:8888/api/search"
+}
+```
+
+自定义接口约定：
 
 ```text
 POST /api/search

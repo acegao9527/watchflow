@@ -6,8 +6,8 @@ Standalone, sanitized version of the Hermes skill script.
 What it does:
 1. Fetch or load Douban wish-list items.
 2. Classify items as movie/show with conservative heuristics.
-3. Search a configurable media-resource API for Quark links.
-4. Validate Quark share links using the share token API.
+3. Search Quark links via built-in wp365 provider or a custom media-resource API.
+4. Decrypt/validate Quark share links using provider logic and the share token API.
 5. Save links into Quark `电影下载` / `电视剧下载` folders.
 6. Normalize movie folders and single main video/subtitle names.
 
@@ -46,7 +46,9 @@ DEFAULT_CACHE_PATH = Path("/tmp/douban_wish.json")
 class Config:
     douban_user_id: str = ""
     quark_cookie: str = ""
-    search_endpoint: str = "http://127.0.0.1:8888/api/search"
+    search_provider: str = "wp365"
+    search_endpoint: str = ""
+    wp365_base_url: str = "https://pan.365wp.top"
     movie_folder: str = "电影下载"
     show_folder: str = "电视剧下载"
 
@@ -72,7 +74,9 @@ def load_config(path: Path) -> Config:
     cfg = Config(
         douban_user_id=os.getenv("DOUBAN_USER_ID", data.get("douban_user_id", "")),
         quark_cookie=os.getenv("QUARK_COOKIE", data.get("quark_cookie", "")),
-        search_endpoint=os.getenv("MEDIA_SEARCH_ENDPOINT", data.get("search_endpoint", Config.search_endpoint)),
+        search_provider=os.getenv("SEARCH_PROVIDER", data.get("search_provider", Config.search_provider)),
+        search_endpoint=os.getenv("MEDIA_SEARCH_ENDPOINT", data.get("search_endpoint", "")),
+        wp365_base_url=os.getenv("WP365_BASE_URL", data.get("wp365_base_url", Config.wp365_base_url)),
         movie_folder=data.get("movie_folder", Config.movie_folder),
         show_folder=data.get("show_folder", Config.show_folder),
     )
@@ -195,13 +199,79 @@ def get_target_fid(client: Any, target_folder: str) -> str:
     return target["fid"]
 
 
-def search_quark(endpoint: str, item: WishItem) -> list[dict[str, Any]]:
+def search_custom_api(endpoint: str, item: WishItem) -> list[dict[str, Any]]:
+    if not endpoint:
+        raise ValueError("search_endpoint is required when search_provider=custom")
     payload = {"kw": item.main_title, "cloud_types": ["quark"], "filter": {"exclude": EXCLUDE_WORDS}}
     with httpx.Client(timeout=30) as client:
         r = client.post(endpoint, json=payload)
         r.raise_for_status()
         data = r.json()
     return data.get("data", {}).get("merged_by_type", {}).get("quark", []) or data.get("data", {}).get("data", {}).get("merged_by_type", {}).get("quark", []) or []
+
+
+def search_wp365(base_url: str, item: WishItem, page: int = 1) -> list[dict[str, Any]]:
+    """Search pan.365wp.top and decrypt encrypted share URLs.
+
+    The original cinema-manager plugin returns encrypted URLs from
+    `/api/interface/search`; the real Quark link is obtained via
+    `/api/transfer-share/transfer-share`.
+    """
+    params = {"keyword": item.main_title, "page": str(page), "pageSize": "20"}
+    headers = {"Referer": f"{base_url}/", "User-Agent": "Mozilla/5.0"}
+    with httpx.Client(timeout=20, headers=headers) as client:
+        r = client.get(f"{base_url}/api/interface/search", params=params)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 200:
+            return []
+        out: list[dict[str, Any]] = []
+        for raw in data.get("data", {}).get("list", []):
+            disk_type = raw.get("disk_type", "")
+            if disk_type != "quark":
+                continue
+            encrypted_url = raw.get("url", "")
+            if not encrypted_url:
+                continue
+            try:
+                tr = client.post(
+                    f"{base_url}/api/transfer-share/transfer-share",
+                    json={"encrypted_url": encrypted_url},
+                    headers={"Content-Type": "application/json", **headers},
+                )
+                tr.raise_for_status()
+                transfer = tr.json()
+            except Exception:
+                continue
+            if transfer.get("code") != 200:
+                continue
+            share_url = transfer.get("data", {}).get("share_url")
+            if not share_url:
+                continue
+            out.append(
+                {
+                    "url": share_url,
+                    "note": raw.get("title", ""),
+                    "source": "wp365",
+                    "raw_source": raw.get("source", ""),
+                    "disk_type_label": raw.get("disk_type_label", ""),
+                }
+            )
+        return out
+
+
+def search_quark(cfg: Config, item: WishItem) -> list[dict[str, Any]]:
+    provider = (cfg.search_provider or "wp365").lower()
+    if provider == "wp365":
+        return search_wp365(cfg.wp365_base_url, item)
+    if provider in {"custom", "api", "media-resource-search"}:
+        return search_custom_api(cfg.search_endpoint, item)
+    if provider == "auto":
+        wp365 = search_wp365(cfg.wp365_base_url, item)
+        if wp365:
+            return wp365
+        return search_custom_api(cfg.search_endpoint, item) if cfg.search_endpoint else []
+    raise ValueError(f"unsupported search_provider: {cfg.search_provider}")
 
 
 def validate_quark_url(url: str) -> tuple[bool, str]:
@@ -243,9 +313,9 @@ def candidate_score(item: WishItem, cand: dict[str, Any]) -> int:
     return score
 
 
-def choose_candidate(endpoint: str, item: WishItem) -> tuple[dict[str, Any] | None, str]:
+def choose_candidate(cfg: Config, item: WishItem) -> tuple[dict[str, Any] | None, str]:
     try:
-        ranked = sorted(search_quark(endpoint, item), key=lambda c: candidate_score(item, c), reverse=True)
+        ranked = sorted(search_quark(cfg, item), key=lambda c: candidate_score(item, c), reverse=True)
     except Exception as exc:
         return None, f"search_error:{type(exc).__name__}"
     for cand in ranked:
@@ -292,8 +362,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cfg = load_config(Path(args.config))
     if args.douban_user_id:
         cfg.douban_user_id = args.douban_user_id
+    if args.search_provider:
+        cfg.search_provider = args.search_provider
     if args.search_endpoint:
         cfg.search_endpoint = args.search_endpoint
+    if args.wp365_base_url:
+        cfg.wp365_base_url = args.wp365_base_url
     cache_path = Path(args.cache)
 
     if args.use_existing:
@@ -329,7 +403,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             results.append({"title": item.main_title, "media_type": item.media_type, "action": "skip_exists", "folder": base})
             continue
         print(f"[{matching_index}/{len(items)}] search {item.media_type}: {base}", file=sys.stderr, flush=True)
-        cand, why = choose_candidate(cfg.search_endpoint, item)
+        cand, why = choose_candidate(cfg, item)
         if not cand:
             results.append({"title": item.main_title, "media_type": item.media_type, "action": "no_resource", "reason": why})
             continue
@@ -356,7 +430,9 @@ def main() -> None:
     ap.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     ap.add_argument("--douban-user-id", default="")
     ap.add_argument("--douban-cookie", default="")
-    ap.add_argument("--search-endpoint", default="")
+    ap.add_argument("--search-provider", choices=["wp365", "custom", "api", "media-resource-search", "auto"], default="", help="Resource search provider; default config value is wp365")
+    ap.add_argument("--search-endpoint", default="", help="Custom media-resource API endpoint, used when search-provider=custom/api")
+    ap.add_argument("--wp365-base-url", default="", help="Override wp365 base URL")
     ap.add_argument("--cache", default=str(DEFAULT_CACHE_PATH))
     ap.add_argument("--use-existing", action="store_true")
     ap.add_argument("--dry-run", action="store_true")

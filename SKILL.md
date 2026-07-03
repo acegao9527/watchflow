@@ -22,11 +22,22 @@ metadata:
 
 ## 使用方式
 
+默认使用内置 `wp365` 资源搜索 provider，因此最小配置只需要豆瓣 ID 和夸克 Cookie：
+
 ```bash
 python3 src/douban_wish_quark_downloader.py \
   --config config.json \
   --count 5 \
   --max-pages 5
+```
+
+如果要使用自己的聚合搜索接口：
+
+```bash
+python3 src/douban_wish_quark_downloader.py \
+  --config config.json \
+  --search-provider custom \
+  --search-endpoint http://127.0.0.1:8888/api/search
 ```
 
 复用缓存分批跑：
@@ -52,6 +63,7 @@ cp examples/config.example.json config.json
 ## 安全规则
 
 - 不提交豆瓣 ID、夸克 Cookie、私有搜索接口。
+- 默认使用公开 `wp365` provider；私有聚合 API 是可选项。
 - 不删除网盘文件。
 - 电视剧只规范顶层文件夹，不乱改内部集数文件。
 - 电影只有单个主视频时才自动重命名视频文件。

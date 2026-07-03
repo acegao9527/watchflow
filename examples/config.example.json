@@ -1,7 +1,9 @@
 {
   "douban_user_id": "YOUR_DOUBAN_USER_ID",
   "quark_cookie": "YOUR_QUARK_COOKIE",
-  "search_endpoint": "http://127.0.0.1:8888/api/search",
+  "search_provider": "wp365",
+  "wp365_base_url": "https://pan.365wp.top",
+  "search_endpoint": "",
   "movie_folder": "电影下载",
   "show_folder": "电视剧下载"
 }
