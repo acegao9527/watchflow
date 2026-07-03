@@ -1,0 +1,7 @@
+{
+  "douban_user_id": "YOUR_DOUBAN_USER_ID",
+  "quark_cookie": "YOUR_QUARK_COOKIE",
+  "search_endpoint": "http://127.0.0.1:8888/api/search",
+  "movie_folder": "电影下载",
+  "show_folder": "电视剧下载"
+}

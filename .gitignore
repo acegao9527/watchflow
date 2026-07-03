@@ -1,0 +1,16 @@
+# Secrets
+config.json
+*.cookie
+*.env
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime outputs
+*.log
+*.jsonl
+/tmp/

@@ -1,0 +1,58 @@
+---
+name: douban-wish-quark-downloader
+description: "从豆瓣想看列表筛选电影/电视剧，检索有效夸克资源，转存到夸克网盘电影/电视剧下载目录，并统一命名。"
+version: 1.0.0
+author: Community
+license: MIT
+metadata:
+  hermes:
+    tags: [douban, wish, quark, movie, show, download, rename, media]
+---
+
+# Douban Wish → Quark Downloader
+
+用于把豆瓣想看列表自动转成夸克网盘下载目录。
+
+## 目标形态
+
+```text
+夸克网盘/电影下载/电影名称 (年份)/电影名称 (年份).mkv
+夸克网盘/电视剧下载/剧集名称 (年份)/...
+```
+
+## 使用方式
+
+```bash
+python3 src/douban_wish_quark_downloader.py \
+  --config config.json \
+  --count 5 \
+  --max-pages 5
+```
+
+复用缓存分批跑：
+
+```bash
+python3 src/douban_wish_quark_downloader.py \
+  --config config.json \
+  --use-existing \
+  --start-index 100 \
+  --count 20
+```
+
+## 配置
+
+复制：
+
+```bash
+cp examples/config.example.json config.json
+```
+
+`config.json` 包含私密信息，不要提交。
+
+## 安全规则
+
+- 不提交豆瓣 ID、夸克 Cookie、私有搜索接口。
+- 不删除网盘文件。
+- 电视剧只规范顶层文件夹，不乱改内部集数文件。
+- 电影只有单个主视频时才自动重命名视频文件。
+- 资源标题太短或疑似短剧/错剧时宁可跳过，不要误存。
