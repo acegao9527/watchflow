@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Douban wish-list -> Quark download folders.
+"""WatchFlow: turn a watchlist into a ready-to-watch media library.
 
 Standalone, sanitized version of the Hermes skill script.
 
@@ -38,7 +38,7 @@ VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".ts", ".wmv", ".flv", ".we
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub"}
 EXCLUDE_WORDS = ["预告", "花絮", "解说", "枪版", "TC", "TS", "CAM", "抢先"]
 BAD_MOVIE_NOTE_HINTS = ["短剧", "全集", "美剧", "电视剧", "动画", "动漫", "综艺"]
-DEFAULT_CONFIG_PATH = Path.home() / ".config/douban-wish-quark-downloader/config.json"
+DEFAULT_CONFIG_PATH = Path.home() / ".config/watchflow/config.json"
 DEFAULT_CACHE_PATH = Path("/tmp/douban_wish.json")
 
 

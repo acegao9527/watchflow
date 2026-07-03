@@ -1,17 +1,17 @@
 ---
-name: douban-wish-quark-downloader
-description: "从豆瓣想看列表筛选电影/电视剧，检索有效夸克资源，转存到夸克网盘电影/电视剧下载目录，并统一命名。"
+name: watchflow
+description: "从豆瓣想看列表筛选电影/电视剧，检索有效夸克资源，转存到夸克网盘电影/电视剧下载目录，并统一命名，形成可同步到 NAS 的媒体入库流水线。"
 version: 1.0.0
 author: Community
 license: MIT
 metadata:
   hermes:
-    tags: [douban, wish, quark, movie, show, download, rename, media]
+    tags: [watchflow, douban, wish, quark, movie, show, media-library, rename]
 ---
 
-# Douban Wish → Quark Downloader
+# WatchFlow
 
-用于把豆瓣想看列表自动转成夸克网盘下载目录。
+用于把豆瓣想看列表自动转成夸克网盘下载目录，并进一步衔接 NAS / 家庭媒体库。
 
 ## 目标形态
 
@@ -25,7 +25,7 @@ metadata:
 默认使用内置 `wp365` 资源搜索 provider，因此最小配置只需要豆瓣 ID 和夸克 Cookie：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --count 5 \
   --max-pages 5
@@ -34,7 +34,7 @@ python3 src/douban_wish_quark_downloader.py \
 如果要使用自己的聚合搜索接口：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --search-provider custom \
   --search-endpoint http://127.0.0.1:8888/api/search
@@ -43,7 +43,7 @@ python3 src/douban_wish_quark_downloader.py \
 复用缓存分批跑：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --use-existing \
   --start-index 100 \
@@ -58,7 +58,11 @@ python3 src/douban_wish_quark_downloader.py \
 cp examples/config.example.json config.json
 ```
 
-`config.json` 包含私密信息，不要提交。
+`config.json` 包含私密信息，不要提交。默认配置文件路径：
+
+```text
+~/.config/watchflow/config.json
+```
 
 ## 安全规则
 

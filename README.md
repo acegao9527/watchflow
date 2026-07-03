@@ -1,10 +1,12 @@
-# Douban Wish Quark Downloader
+# WatchFlow
 
-把豆瓣“想看/待看”列表变成一个自动化媒体入库流水线：
+Turn your watchlist into a ready-to-watch media library.
+
+WatchFlow 把豆瓣“想看/待看”列表变成一个自动化媒体入库流水线：
 
 1. 抓取豆瓣待看条目；
 2. 识别电影 / 电视剧；
-3. 默认调用内置 `wp365` 资源站插件检索并解密夸克网盘链接；
+3. 默认调用内置 `wp365` 资源站 provider 检索并解密夸克网盘链接；
 4. 验证夸克分享链接是否有效；
 5. 转存到夸克网盘的 `电影下载` / `电视剧下载`；
 6. 统一命名：
@@ -26,8 +28,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/<your-name>/douban-wish-quark-downloader.git
-cd douban-wish-quark-downloader
+git clone https://github.com/acegao9527/watchflow.git
+cd watchflow
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -60,12 +62,18 @@ export SEARCH_PROVIDER="custom"
 export MEDIA_SEARCH_ENDPOINT="http://127.0.0.1:8888/api/search"
 ```
 
+默认配置文件路径：
+
+```text
+~/.config/watchflow/config.json
+```
+
 ## 快速试跑
 
 只抓取并打印样例，不转存：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --max-pages 1 \
   --count 5 \
@@ -75,7 +83,7 @@ python3 src/douban_wish_quark_downloader.py \
 正式保存 5 条：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --count 5 \
   --max-pages 5
@@ -84,7 +92,7 @@ python3 src/douban_wish_quark_downloader.py \
 复用已有缓存继续跑：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py \
+python3 src/watchflow.py \
   --config config.json \
   --use-existing \
   --start-index 100 \
@@ -94,8 +102,8 @@ python3 src/douban_wish_quark_downloader.py \
 只处理电影 / 电视剧：
 
 ```bash
-python3 src/douban_wish_quark_downloader.py --config config.json --media-type movie --count 10
-python3 src/douban_wish_quark_downloader.py --config config.json --media-type show --count 10
+python3 src/watchflow.py --config config.json --media-type movie --count 10
+python3 src/watchflow.py --config config.json --media-type show --count 10
 ```
 
 ## 资源搜索 Provider
@@ -170,7 +178,7 @@ POST /api/search
 
 - 豆瓣公开页面可能受登录状态、反爬、隐私设置影响。
 - 电影 / 剧集分类是启发式规则，长剧集、短纪录片、动画条目需要人工抽查。
-- 资源搜索质量取决于你的搜索接口。
+- 资源搜索质量取决于 provider。
 - 夸克转存后有时会处于“下载中”，重命名可能需要稍后重试。
 
 ## License
